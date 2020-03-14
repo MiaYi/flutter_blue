@@ -147,12 +147,12 @@ public class FlutterBluePlugin implements MethodCallHandler, RequestPermissionsR
 
             case "startScan":
             {
-                if (ContextCompat.checkSelfPermission(activity, Manifest.permission.ACCESS_COARSE_LOCATION)
+                if (ContextCompat.checkSelfPermission(activity, Manifest.permission.ACCESS_FINE_LOCATION)
                         != PackageManager.PERMISSION_GRANTED) {
                     ActivityCompat.requestPermissions(
                             activity,
                             new String[] {
-                                    Manifest.permission.ACCESS_COARSE_LOCATION
+                                    Manifest.permission.ACCESS_FINE_LOCATION
                             },
                             REQUEST_COARSE_LOCATION_PERMISSIONS);
                     pendingCall = call;
