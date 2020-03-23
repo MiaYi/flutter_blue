@@ -4,16 +4,15 @@
 
 package com.pauldemarco.flutter_blue;
 
-import android.app.Activity;
 import android.Manifest;
 import android.annotation.TargetApi;
+import android.app.Activity;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothGatt;
 import android.bluetooth.BluetoothGattCallback;
 import android.bluetooth.BluetoothGattCharacteristic;
 import android.bluetooth.BluetoothGattDescriptor;
-import android.bluetooth.BluetoothGattServer;
 import android.bluetooth.BluetoothGattService;
 import android.bluetooth.BluetoothManager;
 import android.bluetooth.BluetoothProfile;
@@ -34,14 +33,20 @@ import android.util.Log;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
 
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import androidx.annotation.NonNull;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+
+import io.flutter.embedding.engine.plugins.FlutterPlugin;
+import io.flutter.embedding.engine.plugins.activity.ActivityAware;
+import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding;
 import io.flutter.plugin.common.EventChannel;
 import io.flutter.plugin.common.EventChannel.EventSink;
 import io.flutter.plugin.common.EventChannel.StreamHandler;
@@ -54,19 +59,20 @@ import io.flutter.plugin.common.PluginRegistry.RequestPermissionsResultListener;
 
 
 /** FlutterBluePlugin */
-public class FlutterBluePlugin implements MethodCallHandler, RequestPermissionsResultListener  {
+public class FlutterBluePlugin implements FlutterPlugin, MethodCallHandler, RequestPermissionsResultListener, ActivityAware {
     private static final String TAG = "FlutterBluePlugin";
     private static final String NAMESPACE = "plugins.pauldemarco.com/flutter_blue";
     private static final int REQUEST_COARSE_LOCATION_PERMISSIONS = 1452;
     static final private UUID CCCD_ID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");
-    private final Registrar registrar;
-    private final Activity activity;
-    private final MethodChannel channel;
-    private final EventChannel stateChannel;
-    private final BluetoothManager mBluetoothManager;
+    private Context context;
+    private MethodChannel channel;
+    private EventChannel stateChannel;
+    private BluetoothManager mBluetoothManager;
     private BluetoothAdapter mBluetoothAdapter;
     private final Map<String, BluetoothDeviceCache> mDevices = new HashMap<>();
     private LogLevel logLevel = LogLevel.EMERGENCY;
+    @NonNull
+    private WeakReference<Activity> activityRef = new WeakReference<>(null);
 
     // Pending call and result for startScan, in the case where permissions are needed
     private MethodCall pendingCall;
@@ -78,11 +84,31 @@ public class FlutterBluePlugin implements MethodCallHandler, RequestPermissionsR
         registrar.addRequestPermissionsResultListener(instance);
     }
 
+    @Override
+    public void onAttachedToEngine(@NonNull FlutterPluginBinding binding) {
+        this.context = binding.getApplicationContext();
+        this.channel = new MethodChannel(binding.getFlutterEngine().getDartExecutor(), NAMESPACE+"/methods");
+        this.stateChannel = new EventChannel(binding.getFlutterEngine().getDartExecutor(), NAMESPACE+"/state");
+        this.mBluetoothManager = (BluetoothManager) context.getSystemService(Context.BLUETOOTH_SERVICE);
+        this.mBluetoothAdapter = mBluetoothManager.getAdapter();
+        channel.setMethodCallHandler(this);
+        stateChannel.setStreamHandler(stateHandler);
+    }
+
+    @Override
+    public void onDetachedFromEngine(@NonNull FlutterPluginBinding binding) {
+
+    }
+
+    public FlutterBluePlugin() {
+
+    }
+
     FlutterBluePlugin(Registrar r){
-        this.registrar = r;
-        this.activity = r.activity();
-        this.channel = new MethodChannel(registrar.messenger(), NAMESPACE+"/methods");
-        this.stateChannel = new EventChannel(registrar.messenger(), NAMESPACE+"/state");
+        //this.registrar = r;
+        this.context = r.activeContext();
+        this.channel = new MethodChannel(r.messenger(), NAMESPACE+"/methods");
+        this.stateChannel = new EventChannel(r.messenger(), NAMESPACE+"/state");
         this.mBluetoothManager = (BluetoothManager) r.activity().getSystemService(Context.BLUETOOTH_SERVICE);
         this.mBluetoothAdapter = mBluetoothManager.getAdapter();
         channel.setMethodCallHandler(this);
@@ -90,7 +116,7 @@ public class FlutterBluePlugin implements MethodCallHandler, RequestPermissionsR
     }
 
     @Override
-    public void onMethodCall(MethodCall call, Result result) {
+    public void onMethodCall(@NonNull MethodCall call, @NonNull Result result) {
         if(mBluetoothAdapter == null && !"isAvailable".equals(call.method)) {
             result.error("bluetooth_unavailable", "the device does not have bluetooth", null);
             return;
@@ -147,19 +173,22 @@ public class FlutterBluePlugin implements MethodCallHandler, RequestPermissionsR
 
             case "startScan":
             {
-                if (ContextCompat.checkSelfPermission(activity, Manifest.permission.ACCESS_FINE_LOCATION)
-                        != PackageManager.PERMISSION_GRANTED) {
-                    ActivityCompat.requestPermissions(
-                            activity,
-                            new String[] {
-                                    Manifest.permission.ACCESS_FINE_LOCATION
-                            },
-                            REQUEST_COARSE_LOCATION_PERMISSIONS);
-                    pendingCall = call;
-                    pendingResult = result;
-                    break;
+                final Activity activity = activityRef.get();
+                if (activity!=null) {
+                    if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION)
+                            != PackageManager.PERMISSION_GRANTED) {
+                        ActivityCompat.requestPermissions(
+                                activity,
+                                new String[] {
+                                        Manifest.permission.ACCESS_FINE_LOCATION
+                                },
+                                REQUEST_COARSE_LOCATION_PERMISSIONS);
+                        pendingCall = call;
+                        pendingResult = result;
+                        break;
+                    }
+                    startScan(call, result);
                 }
-                startScan(call, result);
                 break;
             }
 
@@ -215,9 +244,9 @@ public class FlutterBluePlugin implements MethodCallHandler, RequestPermissionsR
                 // New request, connect and add gattServer to Map
                 BluetoothGatt gattServer;
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    gattServer = device.connectGatt(activity, options.getAndroidAutoConnect(), mGattCallback, BluetoothDevice.TRANSPORT_LE);
+                    gattServer = device.connectGatt(context, options.getAndroidAutoConnect(), mGattCallback, BluetoothDevice.TRANSPORT_LE);
                 } else {
-                    gattServer = device.connectGatt(activity, options.getAndroidAutoConnect(), mGattCallback);
+                    gattServer = device.connectGatt(context, options.getAndroidAutoConnect(), mGattCallback);
                 }
                 mDevices.put(deviceId, new BluetoothDeviceCache(gattServer));
                 result.success(null);
@@ -635,13 +664,13 @@ public class FlutterBluePlugin implements MethodCallHandler, RequestPermissionsR
         public void onListen(Object o, EventChannel.EventSink eventSink) {
             sink = eventSink;
             IntentFilter filter = new IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED);
-            activity.registerReceiver(mReceiver, filter);
+            context.registerReceiver(mReceiver, filter);
         }
 
         @Override
         public void onCancel(Object o) {
             sink = null;
-            activity.unregisterReceiver(mReceiver);
+            context.unregisterReceiver(mReceiver);
         }
     };
 
@@ -880,6 +909,31 @@ public class FlutterBluePlugin implements MethodCallHandler, RequestPermissionsR
         }
     };
 
+    @Override
+    public void onAttachedToActivity(@NonNull ActivityPluginBinding binding) {
+        Log.v(TAG, "onAttachedToActivity");
+        activityRef = new WeakReference<>(binding.getActivity());
+    }
+
+    @Override
+    public void onDetachedFromActivityForConfigChanges() {
+        Log.v(TAG, "onDetachedFromActivityForConfigChanges");
+        activityRef.clear();
+    }
+
+    @Override
+    public void onReattachedToActivityForConfigChanges(@NonNull ActivityPluginBinding binding) {
+        Log.v(TAG, "onReattachedToActivityForConfigChanges");
+        activityRef = new WeakReference<>(binding.getActivity());
+    }
+
+    @Override
+    public void onDetachedFromActivity() {
+        Log.v(TAG, "onDetachedFromActivity");
+        activityRef.clear();
+    }
+
+
     enum LogLevel
     {
         EMERGENCY, ALERT, CRITICAL, ERROR, WARNING, NOTICE, INFO, DEBUG;
@@ -891,15 +945,18 @@ public class FlutterBluePlugin implements MethodCallHandler, RequestPermissionsR
         }
     }
 
-    private void invokeMethodUIThread(final String name, final byte[] byteArray)
-    {
-        activity.runOnUiThread(
-                new Runnable() {
-                    @Override
-                    public void run() {
-                        channel.invokeMethod(name, byteArray);
-                    }
-                });
+    private void invokeMethodUIThread(final String name, final byte[] byteArray) {
+        final Activity activity = activityRef.get();
+        if (activity!=null) {
+            activity.runOnUiThread(
+                    new Runnable() {
+                        @Override
+                        public void run() {
+                            channel.invokeMethod(name, byteArray);
+                        }
+                    });
+        }
+
     }
 
     // BluetoothDeviceCache contains any other cached information not stored in Android Bluetooth API
