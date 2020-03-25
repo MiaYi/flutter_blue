@@ -142,6 +142,11 @@ class FlutterBlue {
     _isScanning.add(false);
   }
 
+  void clearScanResult() {
+    // Clear scan results list
+    _scanResults.add(<ScanResult>[]);
+  }
+
   /// The list of connected peripherals can include those that are connected
   /// by other apps and that will need to be connected locally using the
   /// device.connect() method before they can be used.
