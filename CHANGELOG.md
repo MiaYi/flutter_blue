@@ -1,3 +1,14 @@
+## 0.8.0
+* Migrate the plugin to null safety.
+
+## 0.7.3
+* Fix Android project template files to be compatible with protobuf-lite.
+* Add experimental support for MacOS.
+
+## 0.7.2
+* Add `allowDuplicates` option to `startScan`.
+* Fix performance issue with GUID initializers.
+
 ## 0.7.1+1
 * Fix for FlutterBlue constructor when running on emulator.
 * Return error when attempting to `discoverServices` while not connected.
